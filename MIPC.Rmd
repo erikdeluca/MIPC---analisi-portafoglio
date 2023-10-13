@@ -15,6 +15,7 @@ output:
 
 ```{r setup, include=FALSE, eval=TRUE}
 # knitr::optsxx_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
 library(quantmod)
 library(highcharter)
 library(PerformanceAnalytics)
@@ -235,11 +236,13 @@ p = myPortfolio %>%
   # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
   xlab("") +
   ylab("") +
+  scale_y_continuous(labels = function(x) scales::percent(x-1)) +
   scale_color_manual(values = pal[5], labels = "Prediction of portfolio trends using splines") +
   theme(legend.position = "bottom",
         legend.title = element_blank())
 
-ggplotly(p)
+p
+# ggplotly(p)
 ```
 
 # Decomposizione serie storica
@@ -255,10 +258,10 @@ pfDecomposto = decompose(ts(myPortfolio$Portfolio.Open %>% as.vector(),
 p = tibble(Dates = seq(as.Date("2022-09-29"),
                    length = length(pfDecomposto$x),
                    by =  "days"),
-       Serie = pfDecomposto$x,
-       Seasonal = pfDecomposto$seasonal,
-       Trend = pfDecomposto$trend,
-       Random = pfDecomposto$random) %>% 
+       Serie = pfDecomposto$x %>% coredata(),
+       Seasonal = pfDecomposto$seasonal %>% coredata(),
+       Trend = pfDecomposto$trend %>% coredata(),
+       Random = pfDecomposto$random %>% coredata()) %>% 
   gather(key = "Type", -Dates, value = "y") %>% 
   ggplot(aes(x = Dates, y = y)) + 
     geom_line() +
@@ -519,6 +522,7 @@ myPortfolio %>%
   # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
   xlab("") +
   ylab("") +
+  scale_y_continuous(labels = function(x) scales::percent(x-1)) +
   scale_color_manual(values = pal[5], labels = "Prediction of portfolio trends using splines") +
   theme(legend.position = "bottom",
         legend.title = element_blank())
