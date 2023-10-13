@@ -1,0 +1,687 @@
+---
+title: "MIPC"
+author: "Erik De Luca"
+date: "2023-10-15"
+output:
+  html_document:
+    df_print: "paged"
+    code_folding: hide
+    toc: true
+    theme: united
+    keep_md: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE, eval=TRUE}
+# knitr::optsxx_chunk$set(echo = TRUE)
+library(quantmod)
+library(highcharter)
+library(PerformanceAnalytics)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(DEoptim)
+library(timetk)
+library(plotly)
+library(yahoofinancer)
+library(RColorBrewer)
+theme_set(theme_bw())
+pal = brewer.pal(8, "Dark2")
+conflicted::conflict_prefer("select", "dplyr")
+```
+
+
+```{r setup 2,eval=FALSE}
+knitr::optsxx_chunk$set(echo = TRUE)
+library(quantmod)
+library(highcharter)
+library(PerformanceAnalytics)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(DEoptim)
+library(timetk)
+library(plotly)
+library(yahoofinancer)
+library(RColorBrewer)
+theme_set(theme_bw())
+pal = brewer.pal(8, "Dark2")
+conflicted::conflict_prefer("select", "dplyr")
+```
+
+
+# Importazione dati
+
+Costruisco una tabella con i tickers, le categorie e i pesi dei titoli che comporranno il nostro portafoglio.
+
+```{r setting dati,warning=F}
+detailPortfolio =
+  tibble(
+    tickerList = c(
+      "SPG",      # REITS
+      "OHI",
+      "CCOM.TO",      # Commodities
+      "DBC",
+      "FCX",
+      "KSM-F6.TA",
+      "0P0001MN8G.F",      # CAT BOND
+      "CDZ.TO",      # dividend
+      "NOBL",
+      "NSRGY",
+      "CNI",
+      "WFAFY",
+      "UU.L",
+      "KO",
+      "NVS",
+      "NVDA", # nvidia no dividendi
+      # "SHY",  # short term bond -- in verità sono etf che riproducono l'andamento
+      # "VGSH",
+      "SPTS",
+      "IBGS.AS",
+      "6C=F",      # cash -- ho messo un future sui dollari canadesi per rappresentare la liquidità
+      # "XT2D.L",  # swap  -- non sapevo cosa mettere
+      "XGIU.MI"     # Inflation linked
+    ),
+    category = c(
+      rep("REITS",2),
+      rep("Commodities",4),
+      rep("CAT BOND",1),
+      rep("Dividends",9),
+      rep("Short term bonds",2),
+      rep("Cash",1), 
+      rep("Inflation linked",1) 
+    ),
+    weight = c(
+      .08,
+      .06,
+      .046,
+      # comodities
+      .009,
+      .01,
+      .057,
+      .07,
+      # cat bond
+      .02,
+      # div
+      .06,
+      .02,
+      .01,
+      .017,
+      .005,
+      .005,
+      .05,
+      .023,
+      # .07,
+      # .07,
+      .05,
+      .128,
+      .15,
+      # .00,
+      .13
+    )
+  )
+detailPortfolio
+```
+
+## Indici a base fissa
+
+Importo i dati da Yahoo Finance degli ultimi 5 anni e costruisco il portafoglio senza i pesi di ciascun titolo.
+
+```{r c, warning=FALSE}
+stockData = lapply(detailPortfolio$tickerList,
+                     getSymbols,
+                       src = "yahoo",
+                       from = as.Date("2018-09-30"),
+                       to = as.Date("2023-09-29"),
+                       auto.assign = F
+                     )
+
+# aggiusto i ticket che hanno cambiato nome durante l'importazione
+detailPortfolio$tickerList[detailPortfolio$tickerList == "KSM-F6.TA"] = "KSM.F6.TA"
+detailPortfolio$tickerList[detailPortfolio$tickerList == "6C=F"] = "X6C"
+
+# compatto le diverse liste
+nominalPortfolio = do.call(merge,stockData) %>% 
+  na.omit
+
+# il CAT BOND è privo di volumme
+nominalPortfolio$X0P0001MN8G.F.Volume = 1
+
+for(i in 1:nrow(detailPortfolio))
+{
+  columnSelect = (!names(nominalPortfolio) %like% "Volume") & names(nominalPortfolio) %like% detailPortfolio$tickerList[i]
+  nominalPortfolio[,columnSelect] = nominalPortfolio[,columnSelect] / rep(coredata(nominalPortfolio[1,columnSelect])[1],5) 
+}
+
+as_tibble(nominalPortfolio)
+```
+
+Di seguito il grafico dell'andamento degli indici a base fissa dei titoli che compongono il portafoglio.
+
+```{r}
+grafico = highchart(type = "stock")
+for(i in 1:nrow(detailPortfolio))
+  grafico = hc_add_series(grafico, 
+                          Cl(nominalPortfolio[,names(nominalPortfolio) %like% detailPortfolio$tickerList[i]]),
+                          name = detailPortfolio$tickerList[i])
+grafico
+```
+
+## Andamento titoli nel portafoglio
+
+Aggiungo i pesi iniziali del portafoglio.
+
+```{r}
+portfolio = nominalPortfolio
+
+for(i in 1:nrow(detailPortfolio))
+{
+  columnSelect = (!names(portfolio) %like% "Volume") & names(portfolio) %like% detailPortfolio$tickerList[i]
+  portfolio[,columnSelect] = coredata(nominalPortfolio[,columnSelect]) * detailPortfolio$weight[i] 
+}
+
+as_tibble(portfolio)
+```
+
+Nel grafico seguente sono presenti i diversi titoli che compongono il portafoglio con il loro peso.
+
+```{r}
+grafico = highchart(type = "stock")
+for(i in 1:nrow(detailPortfolio))
+  
+  grafico = hc_add_series(grafico, 
+                          Cl(portfolio[,names(portfolio) %like% detailPortfolio$tickerList[i]]),
+                          name = detailPortfolio$tickerList[i]) 
+grafico
+```
+
+
+## Creazione del portafoglio
+
+Creo il portafoglio sommando gli indici dei titoli moltiplicati per i loro pesi. Così da ottenere l'andamento complessivo del portafoglio.
+
+```{r}
+columnNames = c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+myPortfolio = matrix(NA, nrow(portfolio),ncol = length(columnNames))
+
+for(i in 1:length(columnNames))
+{
+  columnSelect = names(portfolio) %like% columnNames[i]
+  myPortfolio[,i] = sapply(1:nrow(portfolio), function(r) sum(coredata(portfolio[r,columnSelect])))  
+}
+
+colnames(myPortfolio) = paste("Portfolio", columnNames, sep = ".")
+myPortfolio = xts(myPortfolio, order.by = index(portfolio))
+
+as_tibble(myPortfolio)
+```
+
+```{r grafico andamento portafoglio}
+p = myPortfolio %>% 
+  fortify() %>% 
+  ggplot(aes(x = Index, y = Portfolio.Open)) + 
+  geom_smooth(method = "gam",
+              formula = formula(y ~ s(x)),
+              fill = pal[5],
+              aes(color = pal[5]),
+              alpha = .3) +
+  geom_line(color = pal[3]) +
+  geom_pointrange(aes(ymin = Portfolio.Low, 
+                    ymax = Portfolio.High), 
+              alpha = 0.22,
+              fill =  'turquoise1',
+              size = .1) +
+  # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
+  xlab("") +
+  ylab("") +
+  scale_color_manual(values = pal[5], labels = "Prediction of portfolio trends using splines") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+
+ggplotly(p)
+```
+
+# Decomposizione serie storica
+
+Decompongo la serie storica per visualizzare le sue differenti componenti.
+
+```{r Decomposizione serie storica, warning=FALSE}
+pfDecomposto = decompose(ts(myPortfolio$Portfolio.Open %>% as.vector(),
+                            start = c(2022, 9, 29),
+                            # end = c(2023, 09, 28),
+                            frequency = 7))
+# plot(pfDecomposto)
+p = tibble(Dates = seq(as.Date("2022-09-29"),
+                   length = length(pfDecomposto$x),
+                   by =  "days"),
+       Serie = pfDecomposto$x,
+       Seasonal = pfDecomposto$seasonal,
+       Trend = pfDecomposto$trend,
+       Random = pfDecomposto$random) %>% 
+  gather(key = "Type", -Dates, value = "y") %>% 
+  ggplot(aes(x = Dates, y = y)) + 
+    geom_line() +
+    facet_grid(rows = vars(Type), 
+               scales = "free_y") +
+  ylab("")  +
+  scale_x_date(date_breaks = "1 month",
+               date_labels = "%b")
+
+ggplotly(p, dynamicTicks = TRUE) %>%
+  # rangeslider() 
+  plotly::layout(hovermode = "x")
+```
+
+# Ottimizzazione
+
+L'attuale portafoglio ha questi indici, il nostro obiettivo ora è quello di ottimizzare il portafoglio per massimizzare l'indice sharpe rato, ovvero massimizzare il rendimento del portafoglio e al contempo minimizzare il suo rischio.
+
+```{r}
+nominalPortfolioAdj = nominalPortfolio[,names(nominalPortfolio) %like% "Adjusted"] %>%
+  CalculateReturns() %>% 
+  to.yearly.contributions() %>% 
+  na.omit()
+
+weight = detailPortfolio$weight
+
+nominalPortfolioAdj = nominalPortfolioAdj[,names(nominalPortfolioAdj) != "Portfolio Return"]
+
+mean_ret = colMeans(nominalPortfolioAdj)
+
+cov_mat = nominalPortfolio[,names(nominalPortfolio) %like% "Adjusted"] %>%
+  CalculateReturns() %>% 
+  to.quarterly.contributions() %>% 
+  na.omit() %>% 
+  cov()
+
+# solo quando i volumi non sono degeneri
+
+return3mesi = nominalPortfolio[,!names(nominalPortfolio) %like% "Volume"] %>%
+  CalculateReturns() %>%
+  to.period.contributions("quarters") %>%
+  na.omit()
+
+var3m = VaR(R = return3mesi[,names(return3mesi) %like% "Adjusted"],
+            method = "historical",
+            portfolio_method = "component",
+            weights = weight)
+
+port_risk = var3m$hVaR
+
+cov_mat = cov_mat[rownames(cov_mat) != "Portfolio Return",
+                  colnames(cov_mat) != "Portfolio Return"]
+
+port_returns = sum(mean_ret * weight)
+
+port_risk = sqrt(t(weight) %*% (cov_mat %*% weight))
+
+sharpe_ratio = port_returns/port_risk
+
+tibble("Return" = port_returns,
+       "Risk" = port_risk,
+       "VaR a 3 mesi" = var3m$hVaR,
+       "Sharpe ratio" = sharpe_ratio)
+```
+
+
+Verrà fatta una simulazione tramite metodo MonteCarlo dove si ripeterà l'esperimento estraendo casualmente i pesi, cercando così la miglior combinazione di portafoglio.
+In questo caso l'esperimento verrà ripetuto 5000 volte ma i pesi del portafoglio non saranno completamente casuali, varieranno attorno ai valori da noi preimpostati.
+
+```{r}
+set.seed(1)
+num_port = 5000
+
+# Creating a matrix to store the weights
+all_wts = matrix(nrow = num_port,
+                  ncol = nrow(detailPortfolio))
+
+# Creating an empty vector to store
+# Portfolio returns
+port_returns = vector('numeric', length = num_port)
+
+# Creating an empty vector to store
+# Portfolio Standard deviation
+port_risk = vector('numeric', length = num_port)
+
+# Creating an empty vector to store
+# Portfolio Sharpe Ratio
+sharpe_ratio = vector('numeric', length = num_port)
+
+for (i in seq_along(port_returns)) {
+  precisione = 0.9
+  wts = sapply(1:length(weight), function(i) runif(1,precisione * weight[i], (2 - precisione) * weight[i]))
+  # wts = runif(length(tickerList))
+  wts = wts/sum(wts)
+  
+  # Storing weight in the matrix
+  all_wts[i,] = wts
+  
+  # Portfolio returns
+  
+  port_ret = sum(wts * mean_ret)
+  # port_ret <- ((port_ret + 1)^252) - 1
+  
+  # Storing Portfolio Returns values
+  port_returns[i] = port_ret
+  
+  
+  # Creating and storing portfolio risk
+  port_sd = sqrt(t(wts) %*% (cov_mat  %*% wts))
+
+  # Più preciso ma ci mette troppo  
+  # port_sd = VaR(
+  #   R = return3mesi[, names(return3mesi) %like% "Adjusted"],
+  #   method = "historical",
+  #   portfolio_method = "component",
+  #   weights = wts
+  # )$hVaR
+
+  port_risk[i] = port_sd
+  
+  
+  # Creating and storing Portfolio Sharpe Ratios
+  # Assuming 0% Risk free rate
+  sr = port_ret/port_sd
+  sharpe_ratio[i] = sr
+}
+```
+
+## Pesi del portafoglio
+
+Di seguito vengono mostrati i pesi assegnati dal portafoglio con *sharpe ratio* maggiore.
+
+```{r}
+# Storing the values in the table
+portfolio_values = tibble(Return = port_returns,
+                  Risk = port_risk,
+                  SharpeRatio = sharpe_ratio)
+
+
+# Converting matrix to a tibble and changing column names
+all_wts = all_wts %>%
+  data.frame() %>%
+  tibble
+colnames(all_wts) = detailPortfolio$tickerList
+
+# Combing all the values together
+portfolio_values = tibble(cbind(all_wts, portfolio_values))
+colnames(portfolio_values)[1:nrow(detailPortfolio)] = detailPortfolio$tickerList
+
+min_var = portfolio_values[which.min(portfolio_values$Risk),]
+max_sr = portfolio_values[which.max(portfolio_values$SharpeRatio),]
+
+# weightOLD = weight
+weight = max_sr[,1:nrow(detailPortfolio)] %>% 
+  as.numeric() %>% 
+  round(4) 
+
+# con l'arrotondamento potrebbe non fare 1 e lo calibro con il primo titolo, ciò non influenzerà significativamente sullo scostamento del portafoglio
+weight[1] = weight[1] + 1 - sum(weight)
+
+max_sr %>% 
+  t() %>%
+  data.frame()
+```
+
+
+
+
+```{r, warning=FALSE}
+p = max_sr %>%
+  gather(detailPortfolio$tickerList, key = Asset,
+         value = Weights) %>%
+  cbind(Category = factor(detailPortfolio$category)) %>% 
+  mutate(Asset = Asset %>%
+           as.factor() %>% 
+           fct_reorder(Weights),
+         Percentage = str_c(round(Weights*100,2), "%")) %>%
+  ggplot(aes(x = Asset,
+             y = Weights,
+             fill = Category,
+             label = Percentage)) +
+  geom_bar(stat = 'identity') +
+  geom_label(nudge_y = .01, size = 3) +
+  theme_minimal() +
+  labs(x = 'Tickers',
+       y = 'Weights',
+       title = "Weights of the portfolio tangent to the efficient frontier") +
+  scale_y_continuous(labels = scales::percent) +
+  guides(fill = guide_legend(override.aes = aes(label = ""))) + 
+  theme(legend.position = "bottom") +
+  coord_flip()
+
+ggplotly(p)
+```
+## Frontiera efficiente
+
+Il grafico sottostante mostra i valori dei portafogli creati durante il processo di ottimizzazione.
+
+```{r}
+p = portfolio_values %>%
+  ggplot(aes(x = Risk, y = Return, color = SharpeRatio)) +
+  geom_point() +
+  theme_classic() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  labs(x = 'Annual risk',
+       y = 'Annual return',
+       title = "Portfolio optimization and efficient frontier") +
+  geom_point(aes(x = Risk,
+                 y = Return),
+             data = max_sr,
+             color = 'darkred') 
+
+ggplotly(p)
+```
+
+## Portafoglio ottimizzato
+
+```{r Creazione portafoglio ottimizzato}
+# ricreo il portafoglio con i nuovi pesi
+portfolio = nominalPortfolio
+
+for(i in 1:nrow(detailPortfolio))
+{
+  columnSelect = (!names(portfolio) %like% "Volume") & names(portfolio) %like% detailPortfolio$tickerList[i]
+  portfolio[,columnSelect] = coredata(nominalPortfolio[,columnSelect]) * weight[i] 
+}
+
+columnNames = c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+myPortfolio = matrix(NA, nrow(portfolio),ncol = length(columnNames))
+
+for(i in 1:length(columnNames))
+{
+  columnSelect = names(portfolio) %like% columnNames[i]
+  myPortfolio[,i] = sapply(1:nrow(portfolio), function(r) sum(coredata(portfolio[r,columnSelect])))  
+}
+
+colnames(myPortfolio) = paste("Portfolio", columnNames, sep = ".")
+myPortfolio = xts(myPortfolio, order.by = index(portfolio))
+
+```
+
+```{r}
+myPortfolio %>% 
+  fortify() %>% 
+  ggplot(aes(x = Index, y = Portfolio.Open)) + 
+  geom_smooth(method = "gam",
+              formula = formula(y ~ s(x)),
+              fill = pal[5],
+              aes(color = pal[5]),
+              alpha = .3) +
+  geom_line(color = pal[3]) +
+  geom_pointrange(aes(ymin = Portfolio.Low, 
+                    ymax = Portfolio.High), 
+              alpha = 0.22,
+              fill =  'turquoise1',
+              size = .1) +
+  # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
+  xlab("") +
+  ylab("") +
+  scale_color_manual(values = pal[5], labels = "Prediction of portfolio trends using splines") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+```
+
+
+# VaR
+
+Nel seguente grafico sono rappresentati i diversi titoli con il loro rendimento, la loro varianza sulle ascisse e invece sono colorati in base al loro coefficiente di variazione.
+Questo grafico aiuta nella scelta dei pesi iniziali (pre ottimizzazione) dato che è facile visualizzare  quelli che rendono meglio.
+
+```{r rendimento vs varianza, warning=FALSE}
+returnTicker = xts()
+for(i in 1:nrow(detailPortfolio))
+  returnTicker = cbind(returnTicker,dailyReturn(Cl(nominalPortfolio[,names(portfolio) %like% detailPortfolio$tickerList[i]])))
+colnames(returnTicker) = detailPortfolio$tickerList
+
+returnTickerIndici = returnTicker %>% 
+  as.tibble() %>%
+  summarise_all(sum) %>% 
+  pivot_longer(1:nrow(detailPortfolio), names_to = "Titoli", values_to = "Rendimento")  %>% 
+  add_column(returnTicker %>%
+               as.tibble() %>%
+               summarise_all(sd) %>%
+               pivot_longer(1:nrow(detailPortfolio), names_to = "Titoli", values_to = "Varianza") %>% 
+               dplyr::select(Varianza)
+             ) %>% 
+  mutate(Variazione = ifelse(round(Rendimento, 2) != 0,
+                             Varianza/abs(Rendimento),
+                             1)) 
+
+hValMin = 1.8 # giocando con questo parametro si cambia l'asse delle y modificando la distanza dei punti estremi ai punti centrali
+hValMax = 1
+
+p = returnTickerIndici %>%
+  mutate(quantili = punif(Rendimento,
+                       min = hValMin * min(Rendimento), # se non metto hvalmin il min di Rendimento vale 0 e di conseguenza il log tende a meno infinito
+                       max = hValMax * max(Rendimento),
+                       log.p = T)) %>% 
+  ggplot(aes(y = quantili,
+             x = Varianza,
+             color = Variazione,
+             label = Titoli,
+             z = Rendimento # serve solo per l'etichetta nel grafico interattivo
+             )) +
+  geom_point(size = 1.5) + 
+  scale_color_distiller(palette = "RdYlGn", direction = -1) +
+  scale_x_log10(labels = scales::percent_format(accuracy = .2),
+                breaks = scales::breaks_log(n = 10, base = 10)) +
+  scale_y_continuous(labels = function(x) scales::percent(qunif(x,
+                                                                min = hValMin * min(returnTickerIndici$Rendimento),
+                                                                max = hValMax * max(returnTickerIndici$Rendimento),
+                                                                log.p = T), # associo i valori originali invertendo la funzione di ripartizione
+                                                          scale = 1),
+                     breaks = scales::pretty_breaks(10)) +
+  labs(x = "Variation", y = "Return", color = "Coefficient \nof variation") +
+  theme(legend.position = "right", 
+        legend.title.align = 0) 
+
+ggplotly(p, tooltip = c("z", "x", "color", "label"))
+```
+
+
+
+```{r VaR singoli titoli, warning=FALSE}
+return3mesi = nominalPortfolio %>% 
+  CalculateReturns %>% 
+  to.period.contributions("quarters")
+
+
+weight_max_sr = max_sr %>% 
+      t() %>% 
+      head(nrow(detailPortfolio)) %>% 
+      as.vector()
+
+VaR(return3mesi[,names(return3mesi) %like% "Open"],
+    method = "historical",
+    weights = weight_max_sr,
+    portfolio_method = "marginal") %>% 
+  pivot_longer(1:length(weight_max_sr)+1, names_to = "Titoli", values_to = "VaR") %>% 
+  mutate(VaR = round(VaR *100, 2)) %>% 
+  ggplot(aes(x = Titoli, y = VaR, fill = VaR)) +
+  geom_col() +
+  geom_hline(aes(yintercept = PortfolioVaR), color = "orchid") +
+  coord_flip() + 
+  scale_fill_distiller(palette = "RdYlGn", direction = 1) +
+  theme(legend.position = "none") +
+  scale_x_discrete(labels = function(x) str_remove(x,".Open")) +
+  labs(x = "") +
+  scale_y_continuous(labels = scales::percent_format(),
+                     breaks = scales::pretty_breaks(8))
+```
+
+Nell'istogramma seguente è rappresentata la simulazionedi 1000000 campioni presi da una normale di media pari alla media del rendimento del portafoglio su base quadrimestrale e la varianza pari alla varianza del portafoglio su base quadrimestrale.
+
+```{r istogramma VaR, warning=FALSE}
+
+media = sapply(1:nrow(return3mesi), function(i) sum(return3mesi[i,names(nominalPortfolio) %like% "Adjusted"] * weight_max_sr)) %>% mean(na.rm = T)
+
+varianza = sapply(1:nrow(return3mesi), function(i) sum(return3mesi[i,names(nominalPortfolio) %like% "Adjusted"] * weight_max_sr)) %>% sd(na.rm = T)
+
+set.seed(1)
+df = data.frame(x = rnorm(1E6, media, varianza))
+ggplot(df, aes(x, ..density..)) +
+  geom_histogram(color = "violet",
+                 fill = "orchid1",
+                 alpha = .5,
+                 bins = 30) +
+  geom_density(color = "aquamarine") +
+  geom_vline(xintercept = quantile(df$x, probs = .05),
+             color = "aquamarine2") +
+  annotate('text',
+           x = quantile(df$x, probs = .05),
+           y = 0.01,
+           color = "aquamarine4",
+           label = paste("VaR = ",df$x %>% 
+                           quantile(probs = .05) %>% 
+                           round(4))) +
+  xlab("")
+```
+
+# Correlazione
+
+Il correlogramma è utile per vedere la diversificazione del portafoglio.
+
+```{r correlogramma}
+correlazione = return3mesi[,names(return3mesi) %like% "Adjusted"] %>% 
+  na.omit %>% 
+  cor
+
+colnames(correlazione) = stringr::str_remove(colnames(correlazione),".Adjusted")
+rownames(correlazione) = stringr::str_remove(colnames(correlazione),".Adjusted")
+
+
+# categories = levels(factor(detailPortfolio$category))
+# pal[which(detailPortfolio$category[detailPortfolio$tickerList == "XGIU.MI"] == categories)]
+
+
+# Funzione personalizzata per etichette colorate
+color_labels = function(labels, colors) {
+  mapply(function(label, color) {
+    as.expression(bquote(bold(.(color)(.(label)))))
+  }, labels, colors, SIMPLIFY = FALSE)
+}
+
+p = correlazione %>% 
+  reshape2::melt() %>% 
+  ggplot(aes(x=Var1, y=Var2, fill = value, color = value)) + 
+  geom_tile() +
+  scale_fill_distiller(name = "Correlation",
+                       palette = "RdYlGn") +
+  # geom_label(aes(label = round(value,2)), size =2,label.size = 0) +
+  scale_x_discrete(limits = rev(rownames(correlazione))) +
+  # scale_color_identity() +  # Imposta scale_color_identity per rimuovere il mapping del colore
+  guides(color = guide_legend(override.aes = list(color = NULL))) +  # Imposta color su NULL per nasconderlo
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 30,vjust = .95, hjust = .95))
+
+ggplotly(p)
+
+
+
+# map_chr(detailPortfolio$tickerList,~ palette.colors(length(levels(factor(detailPortfolio$category))),"Dark2")[as.numeric(labels(factor(detailPortfolio$category,ordered = T)[detailPortfolio$tickerList == .x]))])
+# 
+# sapply(detailPortfolio$tickerList,function(x) as.numeric(labels(factor(detailPortfolio$category,ordered = T)[detailPortfolio$tickerList == x])))
+```
