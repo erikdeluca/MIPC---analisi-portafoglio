@@ -515,9 +515,9 @@ myPortfolio %>%
               alpha = .3) +
   geom_line(color = pal[3]) +
   geom_pointrange(aes(ymin = Portfolio.Low, 
-                    ymax = Portfolio.High), 
+                      ymax = Portfolio.High), 
               alpha = 0.22,
-              fill =  'turquoise1',
+              fill = 'turquoise1',
               size = .1) +
   # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
   xlab("") +
@@ -620,6 +620,8 @@ Nell'istogramma seguente è rappresentata la simulazionedi 1000000 campioni pres
 
 ```{r istogramma VaR, warning=FALSE}
 
+alpha = 0.005
+
 media = sapply(1:nrow(return3mesi), function(i) sum(return3mesi[i,names(nominalPortfolio) %like% "Adjusted"] * weight_max_sr)) %>% mean(na.rm = T)
 
 varianza = sapply(1:nrow(return3mesi), function(i) sum(return3mesi[i,names(nominalPortfolio) %like% "Adjusted"] * weight_max_sr)) %>% sd(na.rm = T)
@@ -632,14 +634,14 @@ ggplot(df, aes(x, ..density..)) +
                  alpha = .5,
                  bins = 30) +
   geom_density(color = "aquamarine") +
-  geom_vline(xintercept = quantile(df$x, probs = .05),
+  geom_vline(xintercept = quantile(df$x, probs = alpha),
              color = "aquamarine2") +
   annotate('text',
-           x = quantile(df$x, probs = .05),
+           x = quantile(df$x, probs = alpha),
            y = 0.01,
            color = "aquamarine4",
            label = paste("VaR = ",df$x %>% 
-                           quantile(probs = .05) %>% 
+                           quantile(probs = alpha) %>% 
                            round(4))) +
   xlab("")
 ```
@@ -673,7 +675,8 @@ p = correlazione %>%
   ggplot(aes(x=Var1, y=Var2, fill = value, color = value)) + 
   geom_tile() +
   scale_fill_distiller(name = "Correlation",
-                       palette = "RdYlGn") +
+                       palette = "RdYlGn",
+                       direction = 1) +
   # geom_label(aes(label = round(value,2)), size =2,label.size = 0) +
   scale_x_discrete(limits = rev(rownames(correlazione))) +
   # scale_color_identity() +  # Imposta scale_color_identity per rimuovere il mapping del colore

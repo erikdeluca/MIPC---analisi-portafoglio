@@ -59,7 +59,7 @@ returnTickerIndici = returnTicker %>%
                              1)) 
 
 returnTickerIndici %>% 
-  ggplot(aes(Tickers, Variazione, fill = Varianza)) +
+  ggplot(aes(Titoli, Variazione, fill = Varianza)) +
   geom_col() + 
   coord_flip() +
   scale_fill_gradient2(high = "mediumvioletred",
@@ -88,20 +88,40 @@ correlazione %>%
   ggplot(aes(x=Var1, y=Var2, fill=value)) + 
   geom_tile() +
   scale_fill_distiller(name = "Correlation",
-                       palette = "RdYlGn") +
+                       palette = "RdYlGn",
+                       direction = 1) +
   geom_label(aes(label = round(value,2)), size =2,label.size = 0) +
   theme_bw() +
+  scale_x_discrete(limits = rev(rownames(correlazione))) +
   theme(axis.title = element_blank(),
         axis.text.x = element_text(angle = 30,vjust = .95, hjust = .95))
 
 
 
-ggplot() +
-  stat_density()
 
 
-
-
+myPortfolio %>% 
+  fortify() %>%
+  ggplot(aes(x = Index, y = Portfolio.Open)) + 
+  geom_smooth(method = "gam",
+              formula = formula(y ~ s(x)),
+              fill = pal[5],
+              aes(color = pal[5]),
+              alpha = .3) +
+  geom_line(color = pal[3]) +
+  geom_pointrange(aes(ymin = Portfolio.Low, 
+                      ymax = Portfolio.High), 
+                  alpha = 0.22,
+                  fill = 'turquoise1',
+                  size = .1) +
+  # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
+  xlab("") +
+  ylab("") +
+  # scale_x_datetime(date_breaks = "month")+
+  scale_y_continuous(labels = function(x) scales::percent(x-1)) +
+  scale_color_manual(values = pal[5], labels = "Prediction of portfolio trends using splines") +
+  theme(legend.position = "none",
+        legend.title = element_blank())
 
 
 # nuova versione
@@ -127,3 +147,30 @@ max_sr %>%
   guides(fill = guide_legend(override.aes = aes(label = ""))) + 
   theme(legend.position = "bottom") +
   coord_flip()
+
+
+returnTickerIndici %>%
+  mutate(quantili = punif(Rendimento,
+                          min = hValMin * min(Rendimento), # se non metto hvalmin il min di Rendimento vale 0 e di conseguenza il log tende a meno infinito
+                          max = hValMax * max(Rendimento),
+                          log.p = T)) %>% 
+  ggplot(aes(y = quantili,
+             x = Varianza,
+             color = Variazione,
+             label = Titoli,
+             z = Rendimento # serve solo per l'etichetta nel grafico interattivo
+  )) +
+  geom_point(size = 2) + 
+  ggrepel::geom_label_repel(max.overlaps = 100, min.segment.length = .1) +
+  scale_color_distiller(palette = "RdYlGn", direction = -1) +
+  scale_x_log10(labels = scales::percent_format(accuracy = .2),
+                breaks = scales::breaks_log(n = 10, base = 10)) +
+  scale_y_continuous(labels = function(x) scales::percent(qunif(x,
+                                                                min = hValMin * min(returnTickerIndici$Rendimento),
+                                                                max = hValMax * max(returnTickerIndici$Rendimento),
+                                                                log.p = T), # associo i valori originali invertendo la funzione di ripartizione
+                                                          scale = 1),
+                     breaks = scales::pretty_breaks(10)) +
+  labs(x = "Variation", y = "Return", color = "Coefficient \nof variation") +
+  theme(legend.position = "right", 
+        legend.title.align = 0) 

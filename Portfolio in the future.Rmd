@@ -1,0 +1,383 @@
+---
+title: "Portfolio in the future"
+author: "Erik De Luca"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, eval=TRUE}
+# knitr::optsxx_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+library(quantmod)
+library(highcharter)
+library(PerformanceAnalytics)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(DEoptim)
+library(timetk)
+library(plotly)
+library(yahoofinancer)
+library(RColorBrewer)
+theme_set(theme_bw())
+pal = brewer.pal(8, "Dark2")
+conflicted::conflict_prefer("select", "dplyr")
+```
+
+
+```{r setup 2,eval=FALSE}
+knitr::optsxx_chunk$set(echo = TRUE)
+library(quantmod)
+library(highcharter)
+library(PerformanceAnalytics)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(DEoptim)
+library(timetk)
+library(plotly)
+library(yahoofinancer)
+library(RColorBrewer)
+theme_set(theme_bw())
+pal = brewer.pal(8, "Dark2")
+conflicted::conflict_prefer("select", "dplyr")
+```
+
+
+# Importazione dati
+
+Costruisco una tabella con i tickers, le categorie e i pesi dei titoli che comporranno il nostro portafoglio.
+
+```{r setting dati,warning=F}
+detailPortfolio =
+  tibble(
+    tickerList = c(
+      "SPG",      # REITS
+      "OHI",
+      "CCOM.TO",      # Commodities
+      "DBC",
+      "FCX",
+      "KSM-F6.TA",
+      "0P0001MN8G.F",      # CAT BOND
+      "CDZ.TO",      # dividend
+      "NOBL",
+      "NSRGY",
+      "CNI",
+      "WFAFY",
+      "UU.L",
+      "KO",
+      "NVS",
+      "NVDA", # nvidia no dividendi
+      # "SHY",  # short term bond -- in verità sono etf che riproducono l'andamento
+      # "VGSH",
+      "SPTS",
+      "IBGS.AS",
+      "6C=F",      # cash -- ho messo un future sui dollari canadesi per rappresentare la liquidità
+      # "XT2D.L",  # swap  -- non sapevo cosa mettere
+      "XGIU.MI"     # Inflation linked
+    ),
+    category = c(
+      rep("REITS",2),
+      rep("Commodities",4),
+      rep("CAT BOND",1),
+      rep("Dividends",9),
+      rep("Short term bonds",2),
+      rep("Cash",1), 
+      rep("Inflation linked",1) 
+    ),
+    weight = c(
+      .08,
+      .06,
+      .046,
+      # comodities
+      .009,
+      .01,
+      .057,
+      .07,
+      # cat bond
+      .02,
+      # div
+      .06,
+      .02,
+      .01,
+      .017,
+      .005,
+      .005,
+      .05,
+      .023,
+      # .07,
+      # .07,
+      .05,
+      .128,
+      .15,
+      # .00,
+      .13
+    )
+  )
+detailPortfolio
+```
+
+
+```{r c, warning=FALSE}
+stockData = lapply(detailPortfolio$tickerList,
+                     getSymbols,
+                       src = "yahoo",
+                       from = as.Date("2022-09-30"),
+                       to = as.Date("2024-09-10"),
+                       auto.assign = F
+                     )
+
+# aggiusto i ticket che hanno cambiato nome durante l'importazione
+detailPortfolio$tickerList[detailPortfolio$tickerList == "KSM-F6.TA"] = "KSM.F6.TA"
+detailPortfolio$tickerList[detailPortfolio$tickerList == "6C=F"] = "X6C"
+
+# compatto le diverse liste
+nominalPortfolio = do.call(merge,stockData) %>% 
+  na.omit
+
+# il CAT BOND è privo di volumme
+nominalPortfolio$X0P0001MN8G.F.Volume = 1
+
+for(i in 1:nrow(detailPortfolio))
+{
+  columnSelect = (!names(nominalPortfolio) %like% "Volume") & names(nominalPortfolio) %like% detailPortfolio$tickerList[i]
+  nominalPortfolio[,columnSelect] = nominalPortfolio[,columnSelect] / rep(coredata(nominalPortfolio[1,columnSelect])[1],5) 
+}
+
+as_tibble(nominalPortfolio)
+```
+
+Di seguito il grafico dell'andamento degli indici a base fissa dei titoli che compongono il portafoglio.
+
+```{r}
+grafico = highchart(type = "stock")
+for(i in 1:nrow(detailPortfolio))
+  grafico = hc_add_series(grafico, 
+                          Cl(nominalPortfolio[,names(nominalPortfolio) %like% detailPortfolio$tickerList[i]]),
+                          name = detailPortfolio$tickerList[i])
+grafico
+```
+
+## Andamento titoli nel portafoglio
+
+Aggiungo i pesi iniziali del portafoglio.
+
+```{r}
+portfolio = nominalPortfolio
+
+for(i in 1:nrow(detailPortfolio))
+{
+  columnSelect = (!names(portfolio) %like% "Volume") & names(portfolio) %like% detailPortfolio$tickerList[i]
+  portfolio[,columnSelect] = coredata(nominalPortfolio[,columnSelect]) * weight[i] 
+}
+
+as_tibble(portfolio)
+```
+
+Nel grafico seguente sono presenti i diversi titoli che compongono il portafoglio con il loro peso.
+
+```{r}
+grafico = highchart(type = "stock")
+for(i in 1:nrow(detailPortfolio))
+  
+  grafico = hc_add_series(grafico, 
+                          Cl(portfolio[,names(portfolio) %like% detailPortfolio$tickerList[i]]),
+                          name = detailPortfolio$tickerList[i]) 
+grafico
+```
+
+
+## Creazione del portafoglio
+
+Creo il portafoglio sommando gli indici dei titoli moltiplicati per i loro pesi. Così da ottenere l'andamento complessivo del portafoglio.
+
+```{r}
+columnNames = c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+myPortfolio = matrix(NA, nrow(portfolio),ncol = length(columnNames))
+
+for(i in 1:length(columnNames))
+{
+  columnSelect = names(portfolio) %like% columnNames[i]
+  myPortfolio[,i] = sapply(1:nrow(portfolio), function(r) sum(coredata(portfolio[r,columnSelect])))  
+}
+
+colnames(myPortfolio) = paste("Portfolio", columnNames, sep = ".")
+myPortfolio = xts(myPortfolio, order.by = index(portfolio))
+
+as_tibble(myPortfolio)
+```
+
+```{r grafico andamento portafoglio}
+p = myPortfolio %>% 
+  fortify() %>% 
+  ggplot(aes(x = Index, y = Portfolio.Open)) + 
+  geom_smooth(method = "gam",
+              formula = formula(y ~ s(x)),
+              fill = pal[5],
+              aes(color = pal[5]),
+              alpha = .3) +
+  geom_line(color = pal[3]) +
+  geom_pointrange(aes(ymin = Portfolio.Low, 
+                    ymax = Portfolio.High), 
+              alpha = 0.22,
+              fill =  'turquoise1',
+              size = .1) +
+  # geom_col(aes(y = Portfolio.Volume),inherit.aes = F) +
+  xlab("") +
+  ylab("") +
+  scale_y_continuous(labels = function(x) scales::percent(x-1)) +
+  scale_color_manual(values = pal[5], labels = "Prediction of portfolio trends using splines") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+
+p
+# ggplotly(p)
+```
+
+# Decomposizione serie storica
+
+Decompongo la serie storica per visualizzare le sue differenti componenti.
+
+```{r Decomposizione serie storica, warning=FALSE}
+# pfDecomposto = decompose(ts(myPortfolio$Portfolio.Open %>% as.vector(),
+#                             start = c(2022, 9, 29),
+#                             # end = c(2023, 09, 28),
+#                             frequency = 7))
+# plot(pfDecomposto)
+p = tibble(Dates = seq(as.Date("2022-09-29"),
+                   length = length(pfDecomposto$x),
+                   by =  "days"),
+       Serie = pfDecomposto$x %>% coredata(),
+       Seasonal = pfDecomposto$seasonal %>% coredata(),
+       Trend = pfDecomposto$trend %>% coredata(),
+       Random = pfDecomposto$random %>% coredata()) %>% 
+  gather(key = "Type", -Dates, value = "y") %>% 
+  ggplot(aes(x = Dates, y = y)) + 
+    geom_line() +
+    facet_grid(rows = vars(Type), 
+               scales = "free_y") +
+  ylab("")  +
+  scale_x_date(date_breaks = "1 month",
+               date_labels = "%b")
+
+ggplotly(p, dynamicTicks = TRUE) %>%
+  # rangeslider() 
+  plotly::layout(hovermode = "x")
+```
+
+# Ottimizzazione
+
+L'attuale portafoglio ha questi indici, il nostro obiettivo ora è quello di ottimizzare il portafoglio per massimizzare l'indice sharpe rato, ovvero massimizzare il rendimento del portafoglio e al contempo minimizzare il suo rischio.
+
+```{r}
+nominalPortfolioAdj = nominalPortfolio[,names(nominalPortfolio) %like% "Adjusted"] %>%
+  CalculateReturns() %>%
+  # to.period.contributions("all") |>
+  # to.yearly.contributions() %>%
+  # to.quarterly.contributions() %>%
+  na.omit()
+
+# weight = detailPortfolio$weight
+
+nominalPortfolioAdj = nominalPortfolioAdj[,names(nominalPortfolioAdj) != "Portfolio Return"]
+
+mean_ret = colSums(nominalPortfolioAdj)
+
+cov_mat = nominalPortfolio[,names(nominalPortfolio) %like% "Adjusted"] %>%
+  CalculateReturns() %>% 
+  to.quarterly.contributions() %>% 
+  na.omit() %>% 
+  cov()
+
+# solo quando i volumi non sono degeneri
+
+return3mesi = nominalPortfolio[,!names(nominalPortfolio) %like% "Volume"] %>%
+  CalculateReturns() %>%
+  to.period.contributions("quarters") %>%
+  na.omit()
+
+var3m = VaR(R = return3mesi[,names(return3mesi) %like% "Adjusted"],
+            method = "historical",
+            portfolio_method = "component",
+            weights = weight)
+
+port_risk = var3m$hVaR
+
+cov_mat = cov_mat[rownames(cov_mat) != "Portfolio Return",
+                  colnames(cov_mat) != "Portfolio Return"]
+
+port_returns = sum(mean_ret * weight)
+
+port_risk = sqrt(t(weight) %*% (cov_mat %*% weight))
+
+sharpe_ratio = port_returns/port_risk
+
+tibble("Return" = port_returns |> mean() |> scales::percent(accuracy = .1),
+       "Risk" = port_risk |> mean() |> scales::percent(accuracy = .1),
+       "VaR a 3 mesi" = var3m$hVaR |> mean() |> scales::percent(accuracy = .1),
+       "Sharpe ratio" = sharpe_ratio |> mean() |> round(2)
+       )
+```
+
+
+Verrà fatta una simulazione tramite metodo MonteCarlo dove si ripeterà l'esperimento estraendo casualmente i pesi, cercando così la miglior combinazione di portafoglio.
+In questo caso l'esperimento verrà ripetuto 5000 volte ma i pesi del portafoglio non saranno completamente casuali, varieranno attorno ai valori da noi preimpostati.
+
+```{r}
+set.seed(1)
+num_port = 5000
+
+# Creating a matrix to store the weights
+all_wts = matrix(nrow = num_port,
+                  ncol = nrow(detailPortfolio))
+
+# Creating an empty vector to store
+# Portfolio returns
+port_returns = vector('numeric', length = num_port)
+
+# Creating an empty vector to store
+# Portfolio Standard deviation
+port_risk = vector('numeric', length = num_port)
+
+# Creating an empty vector to store
+# Portfolio Sharpe Ratio
+sharpe_ratio = vector('numeric', length = num_port)
+
+for (i in seq_along(port_returns)) {
+  precisione = 0.9
+  wts = sapply(1:length(weight), function(i) runif(1,precisione * weight[i], (2 - precisione) * weight[i]))
+  # wts = runif(length(tickerList))
+  wts = wts/sum(wts)
+  
+  # Storing weight in the matrix
+  all_wts[i,] = wts
+  
+  # Portfolio returns
+  
+  port_ret = sum(wts * mean_ret)
+  # port_ret <- ((port_ret + 1)^252) - 1
+  
+  # Storing Portfolio Returns values
+  port_returns[i] = port_ret
+  
+  
+  # Creating and storing portfolio risk
+  port_sd = sqrt(t(wts) %*% (cov_mat  %*% wts))
+
+  # Più preciso ma ci mette troppo  
+  # port_sd = VaR(
+  #   R = return3mesi[, names(return3mesi) %like% "Adjusted"],
+  #   method = "historical",
+  #   portfolio_method = "component",
+  #   weights = wts
+  # )$hVaR
+
+  port_risk[i] = port_sd
+  
+  
+  # Creating and storing Portfolio Sharpe Ratios
+  # Assuming 0% Risk free rate
+  sr = port_ret/port_sd
+  sharpe_ratio[i] = sr
+}
+```
