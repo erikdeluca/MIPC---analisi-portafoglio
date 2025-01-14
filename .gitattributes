@@ -1,4 +1,6 @@
 *.R linguist-language=R
+*.qmd linguist-detectable=false
+*.rmd linguist-detectable=false
 *.qmd linguist-language=R
 *.rmd linguist-language=R
 *.html linguist-vendored
